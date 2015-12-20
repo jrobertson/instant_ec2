@@ -97,7 +97,7 @@ class InstantEC2
     Thread.new { trigger_on_start() }
   end
   
-  def stopping
+  def stop()
 
     r = self.find_running()
 
