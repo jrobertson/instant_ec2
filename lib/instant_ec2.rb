@@ -17,7 +17,7 @@ class EC2Instance < Hash
   def start(duration: nil)
 
     @c.start_instance self[:instance_id]       
-    Thread.new{ sleep duration * 60; self.stop} if duration
+    Thread.new{ sleep duration.to_i * 60; self.stop} if duration
 
   end
   
@@ -38,18 +38,24 @@ class InstantEC2
                                credentials: Aws::Credentials.new(*credentials))
 
     r = @ec2.describe_instances.reservations
-    image_ids = r.map{|x| x[:instances][0][:image_id] }
-    image_names = @ec2.describe_images(image_ids: image_ids).images.\
-                                                             map{|x| x.name }
-    instance_ids = r.map{|x| x.instances[0].instance_id}
+    
+    ids = @ec2.describe_instances[:reservations].inject({}) do |r, item| 
+      x = item.instances[0]
+      r.merge(x.image_id => x.instance_id)
+    end
 
-    @images = image_names.zip(instance_ids).inject([]) do |r, x|
+    rows = @ec2.describe_images(image_ids: ids.keys)[:images].\
+                                                 map{|x| [x.name, x.image_id] }
 
-      name, id = x
-      r << EC2Instance.new({image_name: name, instance_id: id}, self)
+    @images = rows.inject([]) do |r, x|
+
+      name, image_id = x
+      
+      r << EC2Instance.new({image_name: name, \
+                                         instance_id: ids[image_id]}, self)
       
     end
-    
+
     @hooks = {
       running: ->(ip){ 
         puts "%s: the instance is now accessible from %s" % [Time.now, ip]
