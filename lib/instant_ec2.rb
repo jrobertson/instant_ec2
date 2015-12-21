@@ -16,8 +16,19 @@ class EC2Instance < Hash
 
   def start(duration: nil)
 
-    @c.start_instance self[:instance_id]       
-    Thread.new{ sleep duration.to_i * 60; self.stop} if duration
+    @c.start_instance self[:instance_id]
+    
+    if duration then
+      
+      seconds = duration.to_i * 60
+      
+      if @c.async then
+        Thread.new{ sleep seconds; self.stop} 
+      else
+        sleep seconds
+        self.stop
+      end
+    end
 
   end
   
@@ -30,9 +41,11 @@ end
 
 class InstantEC2
 
-  attr_reader :images
+  attr_reader :images, :async
 
-  def initialize(credentials: [], region: 'us-east-1')
+  def initialize(credentials: [], region: 'us-east-1', async: true)
+    
+    @async = async
 
     @ec2 = Aws::EC2::Client.new(region: region, 
                                credentials: Aws::Credentials.new(*credentials))
@@ -57,6 +70,9 @@ class InstantEC2
     end
 
     @hooks = {
+      pending: ->(){ 
+        puts "%s: the instance is now pending" % [Time.now]
+      },
       running: ->(ip){ 
         puts "%s: the instance is now accessible from %s" % [Time.now, ip]
       },
@@ -68,11 +84,19 @@ class InstantEC2
   def find_image(s)
     @images.find {|x| x[:image_name][/#{s}/i]}
   end
+  
+  def find_pending()
+
+    r = @ec2.describe_instances.reservations.detect do |x|
+      x.instances[0].state.name == 'pending'
+    end
+
+  end  
 
   def find_running()
 
     r = @ec2.describe_instances.reservations.detect do |x|
-      x.instances[0].state.name != 'stopped'
+      x.instances[0].state.name == 'running'
     end
 
   end
@@ -81,10 +105,18 @@ class InstantEC2
     r = self.find_running
     r.instances[0].public_ip_address if r
   end
+
+  def on_pending(&blk)
+    @hooks[:pending]= blk
+  end  
   
   def on_running(&blk)
     @hooks[:running] = blk
   end    
+                                                 
+  def on_stopped(&blk)
+    @hooks[:stopped] = blk
+  end                                                   
   
   def running?
     self.ip ? true : false
@@ -100,7 +132,7 @@ class InstantEC2
 
   def start_instance(id)
     @ec2.start_instances instance_ids: [id]
-    Thread.new { trigger_on_start() }
+    @async ? Thread.new { trigger_on_start() } : trigger_on_start()
   end
   
   def stop()
@@ -120,16 +152,13 @@ class InstantEC2
   
   def stop_instance(id)
     @ec2.stop_instances instance_ids: [id]
-    trigger_on_stopping()    
+    @async ? Thread.new { trigger_on_stopping() } : trigger_on_stopping()
   end
 
   def stopped?()
     self.ip.nil?
   end
   
-  def on_stopped(&blk)
-    @hooks[:stopped] = blk
-  end  
   
   private
   
@@ -137,7 +166,23 @@ class InstantEC2
     
     # timeout after 60 seconds
     t1 = Time.now
-    sleep 1; ip = self.ip until ip or Time.now > t1 + 60
+    sleep 10
+    sleep 2; pending = self.find_pending() until pending or Time.now > t1 + 60
+    
+    if pending then
+      @hooks[:pending].call()
+      trigger_on_running()
+    else
+      puts 'on_running timedout'
+    end
+    
+  end
+                                                 
+  def trigger_on_running()
+    
+    # timeout after 30 seconds
+    t1 = Time.now
+    sleep 1; ip = self.ip until ip or Time.now > t1 + 30
     
     if ip then 
       @hooks[:running].call(ip)
@@ -145,13 +190,14 @@ class InstantEC2
       puts 'on_running timedout'
     end
     
-  end
+  end                                                 
   
   def trigger_on_stopping()
     
     # timeout after 30 seconds
     t1 = Time.now
-    sleep 1; ip = self.ip until ip.nil? or Time.now > t1 + 30
+    sleep 7
+    sleep 2; ip = self.ip until ip.nil? or Time.now > t1 + 30
     
     if ip.nil? then 
       @hooks[:stopping].call()
