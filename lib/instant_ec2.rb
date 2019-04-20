@@ -126,7 +126,10 @@ class InstantEC2
   #
   def start(s, duration: nil)
     
-    self.find_image(s).start duration: duration
+    found = self.find_image(s)
+    return unless found
+    
+    found.start duration: duration
     
   end
 
